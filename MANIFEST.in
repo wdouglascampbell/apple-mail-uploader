@@ -1,0 +1,5 @@
+include LICENSE
+include README.rst
+include MANIFEST.in
+include apple-mail-uploader.py
+include credentials.pyc

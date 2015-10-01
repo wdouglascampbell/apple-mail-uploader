@@ -1,0 +1,6 @@
+Create a distribution package with the following command:
+
+python setup.py sdist
+rm -rf apple_mail_uploader.egg-info
+
+distribution tarbell will be in dist directory.
