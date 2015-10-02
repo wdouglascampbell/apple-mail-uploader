@@ -26,6 +26,7 @@ import logging
 import mailbox
 import md5
 import os
+import platform
 import random
 import re
 import simplejson
@@ -73,6 +74,10 @@ c = conn.cursor()
 c.execute("select value from properties where key='UUID';")
 UUID = c.fetchone()[0]
 conn.close()
+
+# get OS X major version
+v, _, _ = platform.mac_ver()
+osx_version = float('.'.join(v.split('.')[:2]))
 
 
 """
@@ -379,6 +384,8 @@ def getAuthCredentials(conn,reauth):
  *
 '''
 def processMailbox(service,mailroot,message_info,conn):
+    global osx_version
+    
     # initial total messages and total failed messages counts
     total_messages = 0
     total_failed = 0
@@ -399,6 +406,11 @@ def processMailbox(service,mailroot,message_info,conn):
         # Ignore unsent messages
         del mbox_folders[mbox_folders.index('Outbox.mbox')]
     
+    # is this OS X version prior to 10.9?
+    if "[Gmail].mbox" in mbox_folders and osx_version < 10.9:
+        # remove [Gmail].mbox folder so it can be processed like non-Gmail IMAP accounts
+        del mbox_folders[mbox_folders.index("[Gmail].mbox")]
+        
     # does "[Gmail].mbox" folder exists?
     if "[Gmail].mbox" in mbox_folders:
         # yes (Gmail account)
