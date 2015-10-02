@@ -77,7 +77,8 @@ conn.close()
 
 # get OS X major version
 v, _, _ = platform.mac_ver()
-osx_version = tuple(map(int, (v.split("."))))
+v1, v2 = v.split('.')[:2]
+osx_version = 10000 * int(v1) + 100 * int(v2)
 
 
 """
@@ -407,7 +408,7 @@ def processMailbox(service,mailroot,message_info,conn):
         del mbox_folders[mbox_folders.index('Outbox.mbox')]
     
     # is this OS X version prior to 10.9?
-    if "[Gmail].mbox" in mbox_folders and osx_version < [10,9]:
+    if "[Gmail].mbox" in mbox_folders and osx_version < 100900:
         # remove [Gmail].mbox folder so it can be processed like non-Gmail IMAP accounts
         del mbox_folders[mbox_folders.index("[Gmail].mbox")]
         
