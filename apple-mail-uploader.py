@@ -695,7 +695,13 @@ def migrateGmailImapMessages(service,mailroot,labels_list,message_info,conn):
         
         # get message
         message_id, message_subject, msg = getMailMessageForUpload(emlx_file)
-    
+
+        # check message size is not greater than 35MB - 1024B (overhead just in case)
+        if len(msg) > 36699136:
+            # message is to big for Gmail to import
+            logging.info("Message %s of %s - Message is greater than 35MB.  Cannot upload." % (msg_number,total_messages))
+            continue
+
         # has message already been uploaded
         if message_id in message_info:
             # Yes.
@@ -811,6 +817,12 @@ def migrateMessages(service,mailroot,folder,label,message_info,conn):
         # get message
         message_id, message_subject, msg = getMailMessageForUpload(emlx_file)
     
+        # check message size is not greater than 35MB - 1024B (overhead just in case)
+        if len(msg) > 36699136:
+            # message is to big for Gmail to import
+            logging.info("Message %s of %s - Message is greater than 35MB.  Cannot upload." % (msg_number,total_messages))
+            continue
+
         # has message already been uploaded
         if message_id in message_info:
             # Yes.
