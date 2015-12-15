@@ -17,6 +17,7 @@
 '''
 
 import apiclient
+import biplist
 import BaseHTTPServer
 import email.utils
 import getopt
@@ -46,6 +47,7 @@ from oauth2client import GOOGLE_AUTH_URI
 from oauth2client import GOOGLE_REVOKE_URI
 from oauth2client import GOOGLE_TOKEN_URI
 from urlparse import urlparse, parse_qs
+from biplist import *
 
 # turn on logging
 logging.basicConfig(filename='apple-mail-uploader.log',level=logging.INFO)
@@ -68,17 +70,22 @@ class Unbuffered(object):
 
 sys.stdout = Unbuffered(sys.stdout)
 
-# get UUID used by Apple Mail for current user
-conn = sqlite3.connect(os.path.expanduser('~') + "/Library/Mail/V2/MailData/Envelope Index")
-c = conn.cursor()
-c.execute("select value from properties where key='UUID';")
-UUID = c.fetchone()[0]
-conn.close()
-
 # get OS X major version
 v, _, _ = platform.mac_ver()
 v1, v2 = v.split('.')[:2]
 osx_version = 10000 * int(v1) + 100 * int(v2)
+
+if osx_version < 101100:
+    mail_version = "V2"
+else:
+    mail_version = "V3"
+
+# get UUID used by Apple Mail for current user
+conn = sqlite3.connect(os.path.expanduser('~') + "/Library/Mail/" + mail_version + "/MailData/Envelope Index")
+c = conn.cursor()
+c.execute("select value from properties where key='UUID';")
+UUID = c.fetchone()[0]
+conn.close()
 
 
 """
@@ -254,12 +261,26 @@ def getMigrateMessageInfo(conn,mailbox,redoall):
  *     dictionary containing each message's label list
 """
 def getLabelsByMessage(mailroot):
-    global system_labels
+    global system_labels, mail_version, osx_version
+
+    if osx_version < 101100:
+        base_url = re.sub(r'^.*?(IMAP|POP)-(.*)$',lambda match: r'{}://{}'.format(match.group(1).lower(),match.group(2)),mailroot)
+    else:
+        account_ids = {}
+        backuptoc_plist = biplist.readPlist(os.path.expanduser("~/Library/Mail/" + mail_version + "/MailData/BackupTOC.plist"))
+        for mailbox in backuptoc_plist['mailboxes']:
+             if mailbox.has_key('path'):
+                 account_ids[mailbox['path'][1:]] = mailbox['account-id']
+        protocol = re.sub(r'^.*?(IMAP|POP)-.*$',lambda match: r'{}'.format(match.group(1).lower()),mailroot)
+        account = re.sub(r'^.*?(IMAP|POP)-(.*)',lambda match: r'{}-{}'.format(match.group(1),match.group(2)),mailroot)
+        if account_ids.has_key(account):
+            base_url = '{}://{}'.format(protocol,account_ids[account])
+        else:
+            base_url = 'noaccountid'
 
     label_list = defaultdict(list)
-    conn = sqlite3.connect(os.path.expanduser('~') + "/Library/Mail/V2/MailData/Envelope Index")
+    conn = sqlite3.connect(os.path.expanduser('~') + "/Library/Mail/" + mail_version + "/MailData/Envelope Index")
     c = conn.cursor()
-    base_url = re.sub(r'^.*?(IMAP|POP)-(.*)$',lambda match: r'{}://{}'.format(match.group(1).lower(),match.group(2)),mailroot)
     query = "SELECT labels.message_id, mailboxes.url FROM labels INNER JOIN mailboxes ON labels.mailbox_id=mailboxes.ROWID WHERE url LIKE ?"
     for row in c.execute(query,[base_url + "%"]):
         label_part = urllib.unquote(row[1].replace(base_url + "/","")).decode('utf8')
@@ -579,9 +600,11 @@ def isSectionLacksBody(content):
  *
 '''
 def isMsgRead(emlx_file):
+    global mail_version
+
     filename = emlx_file[emlx_file.rfind('/')+1:]
     row_id = filename[0:filename.find('.')]
-    conn = sqlite3.connect(os.path.expanduser('~') + "/Library/Mail/V2/MailData/Envelope Index")
+    conn = sqlite3.connect(os.path.expanduser('~') + "/Library/Mail/" + mail_version + "/MailData/Envelope Index")
     c = conn.cursor()
     c.execute("SELECT read FROM messages WHERE ROWID = ?",[row_id])
     read_status = c.fetchone()[0]
@@ -603,10 +626,23 @@ def getMailMessageForUpload(file):
     msg = extractMsg(file)
 
     # get message-id
-    message_id = re.search("^Message-ID: (.*?)$", msg, re.MULTILINE | re.IGNORECASE).group(1)
+    message_id_search = re.search("^Message-ID: (.*?)$", msg, re.MULTILINE | re.IGNORECASE)
+    if message_id_search is None:
+        # generate a message-id
+        message_id = '<' + md5.new(msg).hexdigest() + '@apple-mail-uploader>'
+        # insert new message-id at end of header
+        end_of_header = msg.find("\n\n")
+        new_msg = msg[0:end_of_header+1] + "Message-ID: " + message_id + msg[end_of_header:]
+        msg = new_msg
+    else:
+        message_id = message_id_search.group(1)
     
     # get message subject
-    message_subject = re.search("^Subject: (.*?)$", msg, re.MULTILINE | re.IGNORECASE).group(1)
+    message_subject_search = re.search("^Subject: ?(.*?)$", msg, re.MULTILINE | re.IGNORECASE)
+    if message_subject_search is None:
+        message_subject = "<no subject>"
+    else:
+        message_subject = message_subject_search.group(1)
     
     # get boundary string
     boundary_search = re.search("^Content-Type:.*?boundary=\"?(.*?)\"?$", msg, re.MULTILINE | re.DOTALL)
@@ -632,7 +668,12 @@ def getMailMessageForUpload(file):
 
         if isSectionLacksBody(section):
             # get .emlxpart file content for this section
-            emlxpart_file = file[0:file.rfind('.partial.emlx')] + "." + str(index+1) + ".emlxpart"
+            #emlxpart_file = file[0:file.rfind('.partial.emlx')] + "." + str(index+1) + ".emlxpart"
+            partial_position = file.rfind('.partial.emlx')
+            if partial_position == -1:
+                emlxpart_file = file[0:file.rfind('.emlx')] + "." + str(index+1) + ".emlxpart"
+            else:
+                emlxpart_file = file[0:partial_position] + "." + str(index+1) + ".emlxpart"
             f = open(emlxpart_file, 'r')
             emlxpart_content = f.read()
             f.close()
@@ -961,7 +1002,7 @@ current_labels["TRASH"] = "TRASH"
 system_labels = {'[Gmail]/Drafts' : u'DRAFTS', '[Gmail]/Important' : u'IMPORTANT', '[Gmail]/Sent Mail' : u'SENT', '[Gmail]/Spam' : u'SPAM', '[Gmail]/Starred' : u'STARRED', '[Gmail]/Trash' : u'TRASH'}
 
 # Set to Apple Mail Storage Location
-APPLE_MAIL_STORAGE_LOCATION = os.path.expanduser('~') + '/Library/Mail/V2'
+APPLE_MAIL_STORAGE_LOCATION = os.path.expanduser('~') + '/Library/Mail/' + mail_version
 
 # Get list of folder entries in Apple Mail Storage Location
 current, dirs, files = os.walk(APPLE_MAIL_STORAGE_LOCATION).next()

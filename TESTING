@@ -1,0 +1,24 @@
+For testing purposes on the development machine, use virtualenv.
+
+Test by doing the following:
+1. Extract distribution tarbell to folder on Desktop
+2. Switch to newly create folder with extracted distribution
+3. Run virtualenv
+
+virtualenv uploader-test
+cd uploader-test
+source bin/activate
+
+4. Switch back to newly created folder with extracted distribution and run setup.py
+
+cd ..
+python setup.py install
+
+5. Run tests
+
+./apple-mail-uploader.py
+
+6. When done, exit out of virtual environment with:
+
+deactivate
+
