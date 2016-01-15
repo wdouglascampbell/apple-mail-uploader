@@ -169,7 +169,6 @@ def createLabel(service, user_id, label_object):
     try:
         label = service.users().labels().create(userId=user_id,
                                                 body=label_object).execute()
-        #print 'Label created for folder: %s' % label_object['name']
         print("Label created for folder: {0}".format((label_object['name'].ljust(55,' ')[:53] + '..') if len(label_object['name'].ljust(55,' ')) > 55 else label_object['name'].ljust(55,' ')))
         #print("Folder: {0} ".format((label.ljust(55,' ')[:53] + '..') if len(label.ljust(55,' ')) > 55 else label.ljust(55,' ')))
         return label['id']
@@ -406,7 +405,7 @@ def getAuthCredentials(conn,reauth):
  *
 '''
 def processMailbox(service,mailroot,message_info,conn):
-    global osx_version
+    global osx_version, UUID
     
     # initial total messages and total failed messages counts
     total_messages = 0
@@ -452,7 +451,8 @@ def processMailbox(service,mailroot,message_info,conn):
             print(" *                                "),
             
             # migrate messages
-            total_messages, total_failed = migrateGmailImapMessages(service,mailroot,labels_list,message_info,conn)
+            folder_path = "%s/[Gmail].mbox/All Mail.mbox/%s/Data" % (mailroot,UUID)
+            total_messages, total_failed = migrateGmailImapMessages(service,mailroot,folder_path,labels_list,message_info,conn)
     else:
         # no (normal account)
         for folder in mbox_folders:
@@ -505,7 +505,7 @@ def processMboxFolder(service,mailroot,folder,message_info,conn):
         print("Folder: {0} ".format((label.ljust(55,' ')[:53] + '..') if len(label.ljust(55,' ')) > 55 else label.ljust(55,' ')))
         print(" *                                "),
         
-        number_messages, number_failed = migrateMessages(service,mailroot,folder + "/" + UUID + "/Data/Messages",current_labels[label],message_info,conn)
+        number_messages, number_failed = migrateMessages(service,mailroot,folder + "/" + UUID + "/Data",current_labels[label],message_info,conn)
         total_messages += number_messages
         total_failed += number_failed
 
@@ -523,7 +523,7 @@ def processMboxFolder(service,mailroot,folder,message_info,conn):
 def uuidFolderExists(folder):
     global UUID
 
-    return (os.path.isdir(folder + '/' + UUID + '/Data/Messages'))
+    return (os.path.isdir(folder + '/' + UUID + '/Data'))
 
 '''
  * extractMsg
@@ -695,29 +695,44 @@ def getMailMessageForUpload(file):
  * Args:
  *     service: authorized Gmail API service instance
  *     mailroot: path of mailbox root folder
+ *     folder: path to mbox folder containing messages to migrate
  *     labels_list: list of labels for this message
  *     message_info: message-id and google id for all migrated messages
  *     conn: database connection handle
  *
 '''
-def migrateGmailImapMessages(service,mailroot,labels_list,message_info,conn):
-    global current_labels, UUID
+def migrateGmailImapMessages(service,mailroot,folder,labels_list,message_info,conn):
+    global current_labels
+    
+    # initialize message counts
+    total_messages = 0
+    total_failed = 0
+    
+    # get list of subfolders EXCLUDING folders named "Attachments"
+    subfolders = [os.path.join(folder, subfolder) for subfolder in os.listdir(folder)
+                     if os.path.isdir(os.path.join(folder, subfolder)) and subfolder != 'Attachments']
+    
+    # for each folder in list - folders are assigned to subfolder parameter
+    for subfolder in subfolders:
+        # migrate messages in subfolder
+        number_messages, number_failed = migrateGmailImapMessages(service,mailroot,subfolder,labels_list,message_info,conn)
+        total_messages += number_messages
+        total_failed += number_failed
     
     # get list all .emlx files
-    folder = "%s/[Gmail].mbox/All Mail.mbox/%s/Data/Messages" % (mailroot,UUID)
     emlx_files = [ folder + "/" + file for file in os.listdir(folder) if file.endswith(".emlx") ]
     
     # get total number of .emlx files (messages) in folder
-    total_messages = len(emlx_files)
+    number_messages = len(emlx_files)
 
     # initialize number of failed messages
-    total_failed = 0
+    number_failed = 0
 
     # iterate over all messages in folder
     msg_number = 0
     for emlx_file in emlx_files:
         msg_number += 1
-        print(BS32+"Migrating message: {0} of {1}".format(str(msg_number).zfill(4),str(total_messages).zfill(4))),
+        print(BS32+"Migrating message: {0} of {1}".format(str(msg_number).zfill(4),str(number_messages).zfill(4))),
 
         # get file name
         filename = emlx_file[emlx_file.rfind('/')+1:]
@@ -741,7 +756,7 @@ def migrateGmailImapMessages(service,mailroot,labels_list,message_info,conn):
         # check message size is not greater than 35MB - 1024B (overhead just in case)
         if len(msg) > 36699136:
             # message is to big for Gmail to import
-            logging.info("Message %s of %s - Message is greater than 35MB.  Cannot upload." % (msg_number,total_messages))
+            logging.info("Message %s of %s - Message is greater than 35MB.  Cannot upload." % (msg_number,number_messages))
             continue
 
         # has message already been uploaded
@@ -758,21 +773,21 @@ def migrateGmailImapMessages(service,mailroot,labels_list,message_info,conn):
                         label_modifications = {'addLabelIds': missing_labels, 'removeLabelIds': []}
                         response = service.users().messages().modify(userId='me', id=message_info[message_id],
                                                                      body=label_modifications).execute()
-                        logging.info("Message %s of %s - Added missing labels: %s" % (msg_number,total_messages,', '.join(missing_labels)))
+                        logging.info("Message %s of %s - Added missing labels: %s" % (msg_number,number_messages,', '.join(missing_labels)))
                         continue
                     except errors.HttpError, error:
                         logging.info("Message %s of %s - Error adding missing labels: %s - Error: %s" %
-                                      (msg_number,total_messages,', '.join(missing_labels),error))
+                                      (msg_number,number_messages,', '.join(missing_labels),error))
                         continue
                     
                 # Message has already been uploaded and no labels need to be added. Skip it.
-                logging.info("Message {0} of {1} - Already Uploaded - Skipped".format(msg_number,total_messages))
+                logging.info("Message {0} of {1} - Already Uploaded - Skipped".format(msg_number,number_messages))
                 continue
             except errors.HttpError, e:
                 error = simplejson.loads(e.content)
                 if error['error']['code'] == 404:
                     # Message already uploaded but has been deleted manually
-                    logging.info("Message %s of %s - Already Uploaded and Manually Deleted - Skipped" % (msg_number,total_messages))
+                    logging.info("Message %s of %s - Already Uploaded and Manually Deleted - Skipped" % (msg_number,number_messages))
                 continue
         
         # create file object to stream message contents
@@ -799,21 +814,23 @@ def migrateGmailImapMessages(service,mailroot,labels_list,message_info,conn):
                 sys.exit()
             except:
                 upload_failed = True
-                total_failed += 1
-                logging.error("Message {0} of {1} - Upload Failed!".format(msg_number,total_messages))
+                number_failed += 1
+                logging.error("Message {0} of {1} - Upload Failed!".format(msg_number,number_messages))
                 break
 
         if not upload_failed:
             conn.execute("INSERT into message_info VALUES (?,?,?)", [mailroot,message_id,response['id']])
             conn.commit()
             message_info[message_id]=response['id']
-            logging.info('Message {0} of {1} - "{2}"- Upload Complete'.format(msg_number,total_messages,message_subject))
+            logging.info('Message {0} of {1} - "{2}"- Upload Complete'.format(msg_number,number_messages,message_subject))
 
         # close BaseIO object
         fh.close()
         
     print "\r",
 
+    total_messages += number_messages
+    total_failed += number_failed
     return total_messages, total_failed
 
 '''
@@ -831,20 +848,35 @@ def migrateGmailImapMessages(service,mailroot,labels_list,message_info,conn):
  *
 '''
 def migrateMessages(service,mailroot,folder,label,message_info,conn):
+    # initialize message counts
+    total_messages = 0
+    total_failed = 0
+    
+    # get list of subfolders EXCLUDING folders named "Attachments"
+    subfolders = [os.path.join(folder, subfolder) for subfolder in os.listdir(folder)
+                     if os.path.isdir(os.path.join(folder, subfolder)) and subfolder != 'Attachments']
+    
+    # for each folder in list - folders are assigned to subfolder parameter
+    for subfolder in subfolders:
+        # migrate messages in subfolder
+        number_messages, number_failed = migrateMessages(service,mailroot,subfolder,label,message_info,conn)
+        total_messages += number_messages
+        total_failed += number_failed
+    
     # get list all .emlx files
     emlx_files = [ folder + "/" + file for file in os.listdir(folder) if file.endswith(".emlx") ]
     
     # get total number of .emlx files (messages) in folder
-    total_messages = len(emlx_files)
+    number_messages = len(emlx_files)
 
     # initialize number of failed messages
-    total_failed = 0
+    number_failed = 0
 
     # iterate over all messages in folder
     msg_number = 0
     for emlx_file in emlx_files:
         msg_number += 1
-        print(BS32+"Migrating message: {0} of {1}".format(str(msg_number).zfill(4),str(total_messages).zfill(4))),
+        print(BS32+"Migrating message: {0} of {1}".format(str(msg_number).zfill(4),str(number_messages).zfill(4))),
 
         # initialize labels
         # one label will always be 'CATEGORY_PERSONAL'
@@ -862,7 +894,7 @@ def migrateMessages(service,mailroot,folder,label,message_info,conn):
         # check message size is not greater than 35MB - 1024B (overhead just in case)
         if len(msg) > 36699136:
             # message is to big for Gmail to import
-            logging.info("Message %s of %s - Message is greater than 35MB.  Cannot upload." % (msg_number,total_messages))
+            logging.info("Message %s of %s - Message is greater than 35MB.  Cannot upload." % (msg_number,number_messages))
             continue
 
         # has message already been uploaded
@@ -878,21 +910,21 @@ def migrateMessages(service,mailroot,folder,label,message_info,conn):
                         label_modifications = {'addLabelIds': [label], 'removeLabelIds': []}
                         response = service.users().messages().modify(userId='me', id=message_info[message_id],
                                                                      body=label_modifications).execute()
-                        logging.info("Message %s of %s - Added new label ID of %s" % (msg_number,total_messages,label))
+                        logging.info("Message %s of %s - Added new label ID of %s" % (msg_number,number_messages,label))
                         continue
                     except errors.HttpError, error:
                         logging.info("Message %s of %s - Error adding new Label ID of %s - Error: %s" %
-                                      (msg_number,total_messages,label,error))
+                                      (msg_number,number_messages,label,error))
                         continue
                     
                 # Message has already been uploaded and no labels need to be added. Skip it.
-                logging.info("Message {0} of {1} - Already Uploaded - Skipped".format(msg_number,total_messages))
+                logging.info("Message {0} of {1} - Already Uploaded - Skipped".format(msg_number,number_messages))
                 continue
             except errors.HttpError, e:
                 error = simplejson.loads(e.content)
                 if error['error']['code'] == 404:
                     # Message already uploaded but has been deleted manually
-                    logging.info("Message %s of %s - Already Uploaded and Manually Deleted - Skipped" % (msg_number,total_messages))
+                    logging.info("Message %s of %s - Already Uploaded and Manually Deleted - Skipped" % (msg_number,number_messages))
                 continue
         
         # create file object to stream message contents
@@ -919,21 +951,23 @@ def migrateMessages(service,mailroot,folder,label,message_info,conn):
                 sys.exit()
             except:
                 upload_failed = True
-                total_failed += 1
-                logging.error("Message {0} of {1} - Upload Failed!".format(msg_number,total_messages))
+                number_failed += 1
+                logging.error("Message {0} of {1} - Upload Failed!".format(msg_number,number_messages))
                 break
 
         if not upload_failed:
             conn.execute("INSERT into message_info VALUES (?,?,?)", [mailroot,message_id,response['id']])
             conn.commit()
             message_info[message_id]=response['id']
-            logging.info('Message {0} of {1} - "{2}"- Upload Complete'.format(msg_number,total_messages,message_subject))
+            logging.info('Message {0} of {1} - "{2}"- Upload Complete'.format(msg_number,number_messages,message_subject))
 
         # close BaseIO object
         fh.close()
         
     print "\r",
 
+    total_messages += number_messages
+    total_failed += number_failed
     return total_messages, total_failed
         
 """

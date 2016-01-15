@@ -3,7 +3,7 @@
 from setuptools import setup, find_packages
 
 setup(name='apple-mail-uploader',
-      version='1.0.2',
+      version='1.0.3',
       description='Apple Mail|GMail Uploader',
       author='Doug Campbell',
       author_email='wdouglascampbell@hotmail.com',
